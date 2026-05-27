@@ -17,6 +17,8 @@ import {
   useKubeScheduler,
   fixArgs
 } from './utils'
+import { parsePositiveMsEnv, WebSocketHeartbeat } from './heartbeat'
+import type { HeartbeatWebSocket } from './heartbeat'
 
 const kc = new k8s.KubeConfig()
 
@@ -230,11 +232,33 @@ export async function execPodStep(
   podName: string,
   containerName: string,
   stdin?: stream.Readable
-): Promise<void> {
+): Promise<number> {
   const exec = new k8s.Exec(kc)
+  core.debug(
+    `[execPodStep] Starting: cmd="${command[0]}" (${command.length} args), pod=${podName}, container=${containerName}`
+  )
+
   command = fixArgs(command)
-  // Exec returns a websocket. If websocket fails, we should reject the promise. Otherwise, websocket will call a callback. Since at that point, websocket is not failing, we can safely resolve or reject the promise.
-  await new Promise(function (resolve, reject) {
+
+  const DEFAULT_PING_PERIOD_MS = 5000
+  const pingPeriodMs = parsePositiveMsEnv(
+    process.env.ACTIONS_RUNNER_HEARTBEAT_PERIOD_MS,
+    DEFAULT_PING_PERIOD_MS
+  )
+  const pongDeadlineMs = parsePositiveMsEnv(
+    process.env.ACTIONS_RUNNER_HEARTBEAT_DEADLINE_MS,
+    pingPeriodMs * 12 + 1000
+  )
+  core.debug(
+    `[execPodStep] Heartbeat config: pingPeriodMs=${pingPeriodMs}, pongDeadlineMs=${pongDeadlineMs}`
+  )
+
+  const heartbeat = new WebSocketHeartbeat(pingPeriodMs, pongDeadlineMs)
+
+  return new Promise<number>((resolve, reject) => {
+    core.debug('[execPodStep] About to call exec.exec')
+    let ws: HeartbeatWebSocket | null = null
+
     exec
       .exec(
         namespace(),
@@ -245,24 +269,88 @@ export async function execPodStep(
         process.stderr,
         stdin ?? null,
         false /* tty */,
-        resp => {
-          // kube.exec returns an error if exit code is not 0, but we can't actually get the exit code
+        async resp => {
+          core.debug(
+            `[execPodStep] execPodStep response: ${JSON.stringify(resp)}`
+          )
+
+          heartbeat.stop()
+
+          // Close WebSocket and wait for it before resolving/rejecting
+          const closeWebSocket = async (): Promise<void> => {
+            const socket = ws
+            if (
+              socket &&
+              (socket.readyState === 1 || socket.readyState === 0)
+            ) {
+              return new Promise<void>(closeResolve => {
+                const closeTimeout = setTimeout(() => {
+                  core.warning(
+                    '[execPodStep] WebSocket close timeout, forcing cleanup'
+                  )
+                  closeResolve()
+                }, 5000)
+
+                socket.once('close', () => {
+                  clearTimeout(closeTimeout)
+                  core.debug('[execPodStep] WebSocket closed cleanly')
+                  closeResolve()
+                })
+                socket.close()
+              })
+            }
+          }
+
           if (resp.status === 'Success') {
-            resolve(resp.code)
+            core.debug(`[execPodStep] Success, code: ${resp.code}`)
+            await closeWebSocket()
+            resolve(resp.code || 0)
           } else {
             core.debug(
-              JSON.stringify({
+              `[execPodStep] Failure: ${JSON.stringify({
                 message: resp?.message,
                 details: resp?.details
-              })
+              })}`
             )
-            reject(resp?.message)
+            await closeWebSocket()
+            reject(resp?.message || 'execPodStep failed')
           }
         }
       )
-      // If exec.exec fails, explicitly reject the outer promise
-      // eslint-disable-next-line github/no-then
-      .catch(e => reject(e))
+      .then(websocket => {
+        core.debug('[execPodStep] exec.exec resolved, ws object received')
+        ws = websocket
+        if (ws) {
+          heartbeat.start(ws, reject)
+        } else {
+          core.warning('[Heartbeat] WebSocket is null, heartbeat not started')
+        }
+      })
+      .catch(async e => {
+        heartbeat.stop()
+        core.error(`[execPodStep] exec.exec threw error: ${e}`)
+
+        // Close WebSocket before rejecting with timeout protection
+        const socket = ws
+        if (socket && (socket.readyState === 1 || socket.readyState === 0)) {
+          await new Promise<void>(closeResolve => {
+            const closeTimeout = setTimeout(() => {
+              core.warning(
+                '[execPodStep] WebSocket close timeout in error handler'
+              )
+              closeResolve()
+            }, 5000)
+
+            socket.once('close', () => {
+              clearTimeout(closeTimeout)
+              closeResolve()
+            })
+            socket.close()
+          })
+        }
+
+        reject(e)
+      })
   })
 }
 
