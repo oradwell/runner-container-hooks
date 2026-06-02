@@ -2,20 +2,14 @@
 
 ## Bugs
 
-- Change command to remove sudo to fix fs-init initial container [#263]
-- Sort 'find' output before hashing for consistency [#267]
-- feat: check if required binaries are present [#272]
-- Allow non-root container [#264]
-- Improve validation checks after copying [#285]
-- Fix workingDir permissions issue by creating it within init container [#283]
-- Fix event.json not being copied to /github/workflow in kubernetes-novolume mode [#287]
-- Reduce the amount of data copied to the workflow pod [#293]
-- Overwrite runner file commands [#298]
+- Adding websocket heartbeat [[#333](https://github.com/actions/runner-container-hooks/pull/333)]
+- Solving the 30-second delay in step [[#316](https://github.com/actions/runner-container-hooks/pull/316)]
 
 ## Misc
 
-- Dependency updates [#276] [#277] [#278] [#279] [#304]
-- Group dependabot updates [#289]
+- Group dependabot updates [[#363](https://github.com/actions/runner-container-hooks/pull/363)] [[#343](https://github.com/actions/runner-container-hooks/pull/343)] [[#327](https://github.com/actions/runner-container-hooks/pull/327)]
+- make bootstrap deterministic and align CI installs [[#343](https://github.com/actions/runner-container-hooks/pull/343)]
+- Add actions-runtime to CODEOWNERS [[#350](https://github.com/actions/runner-container-hooks/pull/350)]
 
 ## SHA-256 Checksums
 
